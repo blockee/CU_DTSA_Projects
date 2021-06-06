@@ -1,0 +1,186 @@
+---
+title: "DTSA Covid Report"
+author: "Brent Lockee"
+date: "6/6/2021"
+output: pdf_document
+---
+# Covid-19 Report and Analysis
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(data.table)
+library(RcppRoll)
+```
+
+## Data Import and initial cleaning
+
+The data comes from Johns Hopkins github page and much of this initial loading and transformation is taken from the week three lecture series with permission from the project overview text. Full details on the origin and handling of the data set are available in the github repo.
+
+In this report, I will focus on the data from the USA in an effort to provide a slightly more in-depth analysis.
+
+
+
+```{r data_import}
+cases <- read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv")
+deaths <- read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv")
+
+```
+
+```{r data_melt}
+
+us_cases <- cases %>%
+  pivot_longer(cols = -c(UID, iso2, iso3, code3, FIPS, Admin2, Province_State, Country_Region, Lat, Long_, Combined_Key),
+  names_to = "date",
+  values_to = "cases") %>%
+  mutate(date = mdy(gsub('^.', '', date))) %>%
+  select(-c(Lat, Long_, UID, iso2, iso3, code3, FIPS))
+
+us_deaths <- deaths %>%
+  pivot_longer(cols = -c(UID, iso2, iso3, code3, FIPS, Admin2, Province_State, Country_Region, Lat, Long_, Combined_Key, Population),
+  names_to = "date",
+  values_to = "deaths") %>%
+  mutate(date = mdy(gsub('^.', '', date))) %>%
+  select(-c(Lat, Long_, UID, iso2, iso3, code3, FIPS))
+```
+
+```{r data_join}
+us <- us_cases %>%
+  full_join(us_deaths)
+
+summary(us)
+
+```
+
+## Creating a Lagging New Case Variable
+
+For my unique analysis and modeling, I'd like to see how predictive a lagging new case variable is on deaths. The code below creates new case and new death variables by subtracting each from the prior days respective value. From there, new case 
+
+According to the CDC, the median time from onset of illness to ICU admission was 9.5 - 12 days with the median hospital stay lasting 10 -13 days. This disease progression data informed my choice of using average daily case rates from 30 to 10 days prior.
+
+More information availble here: https://www.cdc.gov/coronavirus/2019-ncov/hcp/clinical-guidance-management-patients.html
+
+
+
+```{r rolling_cases}
+setDT(us)
+setkeyv(us, c("Combined_Key", "date"))
+
+us[, new_cases:= cases - shift(roll_sumr(cases, n=1)), by=Combined_Key]
+us[, new_deaths:= deaths - shift(roll_sumr(deaths, n=1)), by=Combined_Key]
+
+us[, cases_10:=shift(roll_sumr(new_cases, n=10)), by=Combined_Key]
+us[, cases_30:=shift(roll_sumr(new_cases, n=30)), by=Combined_Key]
+us[, cases_20:=shift(roll_sumr(new_cases, n=20)), by=Combined_Key]
+us[, cases_50:=shift(roll_sumr(new_cases, n=50)), by=Combined_Key]
+
+us <- us %>%
+  mutate(cases_rolling_30_10_avg = (cases_30 - cases_10)/ 20) %>%
+  mutate(cases_rolling_50_20_avg = (cases_50 - cases_20)/ 30) %>%
+  filter(new_cases > -1)
+
+summary(us)
+
+```
+
+## Visualizing and Validating the Lagging Variable
+
+
+
+```{r location_graph_kc}
+
+us %>%
+  filter(Combined_Key == "Jackson, Missouri, US" & !is.na(cases_rolling_50_20_avg)) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(y = cases_rolling_50_20_avg, color = "cases_rolling_50_20_avg")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_line(aes(color = "new_cases")) +
+  theme(legend.position = "bottom") +
+  labs(title = "Covid in Jackson County MO", y = NULL)
+
+```
+
+```{r location_graph_nyc}
+
+us %>%
+  filter(Combined_Key == "New York, New York, US" & !is.na(cases_rolling_50_20_avg)) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(y = cases_rolling_50_20_avg, color = "cases_rolling_50_20_avg")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_line(aes(color = "new_cases")) +
+  theme(legend.position = "bottom") +
+  labs(title = "Covid in New York", y = NULL)
+
+```
+
+The lagging variable graphs as expected - it tracks the new_cases variable but shifted forward by 30 days. However, each location has one or two days with a much higher new case number than its neighbors. I suspect those are data dump days when then case count catches up over a holiday or some other reporting delay. You can see the problematic lines for each location below.
+
+```{r spike_days}
+
+filter(us, Combined_Key == "New York, New York, US" & !is.na(cases_rolling_50_20_avg) & new_cases > 3000)
+
+```
+
+Repeating the above graphs without the new cases variable that makes the scale difficult to read.
+
+```{r location_graph2_kc}
+
+us %>%
+  filter(Combined_Key == "Jackson, Missouri, US" & !is.na(cases_rolling_50_20_avg)) %>%
+  ggplot(aes(x = date, y = cases_rolling_50_20_avg)) +
+  geom_line(aes(color = "cases_rolling_50_20_avg")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  theme(legend.position = "bottom") +
+  labs(title = "Covid in Jackson County MO", y = NULL)
+
+```
+
+```{r location_graph2_nyc}
+us %>%
+  filter(Combined_Key == "New York, New York, US" & !is.na(cases_rolling_50_20_avg)) %>%
+  ggplot(aes(x = date, y = cases_rolling_50_20_avg)) +
+  geom_line(aes(y = cases_rolling_50_20_avg, color = "cases_rolling_50_20_avg")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  theme(legend.position = "bottom") +
+  labs(title = "Covid in New York", y = NULL)
+
+```
+
+## Creating a Model to Predict New Daily Deaths
+
+```{r new_deaths_model}
+mod <- lm(new_deaths ~ cases_rolling_50_20_avg, data=us)
+summary(mod)
+```
+
+Comparing to a model that doesn't look so far back - using the 30 to 10 day window instead.
+
+```{r new_deaths_model2}
+mod <- lm(new_deaths ~ cases_rolling_30_10_avg, data=us)
+summary(mod)
+```
+
+The rolling case average from 50 to 20 days ago and 30 to 10 days ago are both highly significant when predicting daily new deaths for a location. Interestingly, each model only achieves an R squared of ~0.13. The model using the 30 to 10 days prior window performed slightly better as a whole. Even in our two locations, the new deaths data did seem highly variable from day to day, making it harder to predict.
+
+Testing the addition of a county's population to see if it has any impact on the model accuracy. It seems plausible that large and small counties may have different mortality rates.
+
+```{r new_deaths_model_pop}
+mod <- lm(new_deaths ~ cases_rolling_30_10_avg + Population, data=us)
+summary(mod)
+```
+
+The population variable is also significant but does not much to the R-squared value of the model.
+
+## Next Steps, Bias Sources and Conclusion
+
+The spike days of massive jumps in new cases (and deaths) may be causing issues with the analysis and may need to be removed. However, if they represent legitimate but delayed data, it may be proper to keep them in the dataset given that this analysis smooths the big jump in cases out over the rolling average windows.
+
+These large jumps in new cases and deaths likely represent reporting biases, or at least delays. This data has been collected from a huge variety of institutions and there were many real world challenges in getting and aggregating this data. Even more fundamentally, cases during the beginning of the pandemic were likely under-reported due to lack of testing. Finally, the decision to use 30-10 and 50-20 lagging case windows could include some personal bias. I made what I felt was a logical, defensible decision based on the CDC website on Covid progression.
+
+With rolling average daily new case counts and deaths lined up like this, a mortality analysis over time and by location would also be a logical next step.
+
+This analysis has transformed the Covid data to show daily new case and death counts and then used those to create rolling, lagging new case averages. From there, models were created to assess the predictive power of those lagging case averages. The rolling new case average from 30 to 10 days prior turned out to be slightly more predictive than the 50 to 20 day window.
+
+

@@ -1,0 +1,107 @@
+---
+title: "Data Science As A Field NYC Shootings Project"
+author: "CU Student"
+date: "5/21/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+```
+
+## Data Science as a Field NYC Shooting Project
+
+This is the week three assignment for the Data Science as a Field course. We'll examine and make a repeatable report about data from shootings in New York City. The data is read in and summarized before any transformations.
+
+```{r read}
+df <-read.csv('https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD')
+
+summary(df)
+```
+
+Cleaning the dataset by making all column names lowercase, and making appropriate columns dates or factors. Age group columns could be converted to numeric by taking the average of the range but for this analysis I've decided to convert them to factors. Then summarizing after changes.
+
+``` {r tidy data}
+names(df) <- tolower(names(df))
+
+factor_cols = c('boro', 'precinct', 'jurisdiction_code', 'location_desc', 'perp_sex', 'perp_race', 'vic_sex', 'vic_race', 'perp_age_group', 'vic_age_group')
+
+df[factor_cols] <- lapply(df[factor_cols], as.factor)
+
+df <- df %>%
+  mutate(occur_date = mdy(occur_date))
+
+summary(df)
+```
+
+Many of the features describing the perpetrator and the victim have missing data, represented by an empty string, and a value denoting unknown. I plan to fill missing data with the appropriate unknown value for each column and to allow that unknown category to remain a factor.
+
+### Borough Over the Years Analysis
+
+For an initial analysis, I'd like to understand how the shootings are spread over the years and boroughs.
+
+
+```{r boro year}
+
+boro_year_total <- df %>%
+  group_by(boro, year(occur_date)) %>%
+  summarize(shootings = n_distinct(incident_key),) %>%
+  ungroup()
+
+summary(boro_year_total)
+
+```
+
+``` {r boro year visualization}
+boro_year_total %>%
+  ggplot(aes(x=`year(occur_date)`, y=shootings, group=boro, color=boro)) +
+    geom_line()
+```
+2020 Marked a sharp increase in shootings for all the boroughs except Staten Island. This trend is certainly one for further analysis although detecting the cause is probably beyond the scope of this dataset.
+
+The borough and year seem to go a long way in explaining the yearly shootings, so I've prepared a first model using those two variables to predict the number of shootings in a year.
+
+```{r boro year model}
+mod <- lm(shootings ~ `year(occur_date)` + boro, data=boro_year_total)
+summary(mod)
+```
+Even with a simple linear model, the borough and year are highly effective in predicting the yearly shootings.
+
+### Location Type Analysis
+
+I'd also like to understand more about the types of locations where the shootings are occuring and if the year over year trend is as apparent when slicing the data that way.
+
+```{r location total}
+
+location_total <- df %>%
+  group_by(location_desc, year(occur_date)) %>%
+  summarize(shootings = n_distinct(incident_key),) %>%
+  ungroup()
+
+summary(location_total)
+```
+
+``` {r location visualization}
+location_total %>%
+  ggplot(aes(x=`year(occur_date)`, y=shootings, group =location_desc, color=location_desc)) +
+    geom_line()
+```
+
+A few locations have vastly more shootings than the others. Which are those in 2020?
+
+```{r location analysis}
+location_total %>% filter(shootings >25 & `year(occur_date)` == 2020)
+```
+
+### Conclusion
+
+This preliminary analysis shows a large increase in shootings in 2020 and the types of locations and boros with the most shootings. Looking more closely at residential shootings seems to be a promising area for future analysis. 
+
+A large source of bias in this analysis is the fact that the count of shootings does not take into account the populations and demographics of each of these boroughs. The boroughs are quite different in these respects so presenting total counts of shootings rather than rates is not indicative of the full picture. With the high number of rows missing data, it is also reasonable to wonder if there is reporting bias affecting this data even before this analysis.
+
+The population/demographic bias could be addressed by supplementing this dataset with general information about the boroughs and analyzing the shootings in the context of the population and population density. Addressing the possible reporting bias would likely involve a lot of in-person investigation to fill in the missing data or an effort to supplement this data with some collected by an outside organization.
+
+Regarding personal bias, I'm neither an expert on shootings nor on New York so I have a large number of blind spots regarding this data and likely do not understand the nuance or context. I believe I have presented this report as an initial overview of a narrow slice of the data and not attempted to make it seem more authoritative or exhaustive than is warranted. Finally, I have noted that even a more thorough analysis will likely not provide us with causal information about these shootings.
+
